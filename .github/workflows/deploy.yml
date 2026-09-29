@@ -1,0 +1,43 @@
+# Deploy al homelab — corre tras CI verde + aprobación manual.
+# El runner entra a tu red SOLO por Tailscale (sin puertos públicos).
+# Configurar 1 vez: Settings → Environments → "production" → Required reviewers: vos.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production # ← la aprobación de 1 clic vive acá
+    steps:
+      - name: Unir runner a la tailnet
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up \
+            --authkey="${{ secrets.TS_AUTHKEY }}" \
+            --hostname="ci-deploy" \
+            --accept-dns=false
+          tailscale status
+
+      - name: Deploy por SSH (tailnet, sin IP pública)
+        env:
+          SSH_KEY: ${{ secrets.HOMELAB_SSH_KEY }}
+          SSH_HOST: ${{ secrets.HOMELAB_SSH_HOST }}
+          SSH_USER: ${{ secrets.HOMELAB_SSH_USER }}
+          APP_DIR: ${{ secrets.HOMELAB_APP_DIR }}
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
+            "${SSH_USER}@${SSH_HOST}" \
+            "bash ${APP_DIR}/scripts/deploy.sh ${SHA}"

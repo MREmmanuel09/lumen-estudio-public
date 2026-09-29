@@ -1,0 +1,35 @@
+# CI — corre en cada push y PR. El deploy solo avanza si esto está verde.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call: # reusable desde deploy.yml
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npx prisma generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+        env:
+          # Solo para compilar; el schema real vive en el homelab
+          DATABASE_URL: file:./dev.db
+          SESSION_PASSWORD: ci-dummy-password-de-al-menos-32-chars!

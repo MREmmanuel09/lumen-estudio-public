@@ -1,0 +1,101 @@
+# Sync público — publica un SNAPSHOT saneado al repo público.
+#
+# Flujo (ver scripts/sync-public.sh):
+#   - Cada sync crea un commit HUÉRFANO (sin padre) con el árbol saneado.
+#     El repo público NUNCA ve el historial privado (sin PII de commits viejos).
+#   - Fail-closed: si faltan los valores privados o el gate detecta PII/secretos,
+#     el job falla sin publicar nada.
+#
+# Configuración:
+#   1. En GitHub → Settings → Secrets → Actions (del repo privado), agregar:
+#        PUBLIC_REPO_DEPLOY_KEY: clave SSH privada con write al repo público
+#        PRIVATE_VALUES_JSON: contenido de .private-values.json (real -> placeholder)
+#      (el correspondiente `PUBLIC_REPO_DEPLOY_KEY.pub` se agrega como
+#       Deploy Key en el repo público con "Allow write access").
+#   2. En este mismo workflow, ajustar `PUBLIC_REPO_SSH` con la URL SSH
+#      de tu repo público (ej: git@github.com:MREmmanuel09/lumen-estudio-public.git).
+#
+# Trigger:
+#   - Manual desde Actions tab (workflow_dispatch)
+#   - O automático: en cada push a main (opcional, recomendado para portafolio)
+#
+# Lo que hace:
+#   1. Checkout del repo privado
+#   2. Ejecuta scripts/sync-public.sh → snapshot saneado, gate de PII/secretos,
+#      commit huérfano y push a refs/heads/public del repo público.
+#   3. Si el gate detecta datos sensibles o faltan los valores privados, falla
+#      sin publicar (fail-closed).
+
+name: Sync public
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Escribí SYNC para confirmar'
+        required: true
+        default: ''
+        type: string
+  # Descomentar para sync automático en cada push a main:
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment: production  # aprobación manual opcional en Settings → Environments
+    steps:
+      - name: Confirmar intención
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "SYNC" ]; then
+            echo "❌ Debés escribir SYNC para confirmar."
+            exit 1
+          fi
+
+      - name: Checkout repo privado
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup SSH para push al repo público
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PUBLIC_REPO_DEPLOY_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Host key pinning: ajustar si tu host es self-hosted
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          cat >> ~/.ssh/config <<EOF
+          Host public-repo
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/deploy_key
+            StrictHostKeyChecking accept-new
+          EOF
+
+      - name: Configurar remote público
+        run: |
+          # Ajustar esta URL a tu repo público real
+          git remote remove public 2>/dev/null || true
+          git remote add public git@github.com:MREmmanuel09/lumen-estudio-public.git
+          git remote -v
+
+      - name: Sync rama public
+        env:
+          PUBLIC_REMOTE: public
+          PUBLIC_BRANCH: public
+          # Fail-closed: sin este secret el script aborta sin publicar nada.
+          # Contiene el JSON de valores reales -> placeholders (mismo contenido
+          # que .private-values.json local, que NUNCA se commitea).
+          PRIVATE_VALUES_JSON: ${{ secrets.PRIVATE_VALUES_JSON }}
+        run: bash scripts/sync-public.sh public
+
+      - name: Resumen
+        if: success()
+        run: |
+          echo "✅ Rama 'public' sincronizada al repo público."
+          echo "Verificá en: https://github.com/MREmmanuel09/lumen-estudio-public"

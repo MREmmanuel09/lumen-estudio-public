@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.env
+.env.local
+dev.db
+dev.db-journal
+public/uploads
+*.log
+.DS_Store
+_next_*.bak
+_next_old.bak
+migrations_postgres_backup
+dev.log
+dev.err.log
+*.bak
