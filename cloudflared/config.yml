@@ -1,0 +1,22 @@
+# Cloudflare Tunnel — config para LUMEN Estudio
+# Documentación: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+
+# El TUNNEL_TOKEN se genera en el dashboard de Cloudflare Zero Trust:
+# https://one.dash.cloudflare.com → Networks → Tunnels → Create a tunnel
+# Luego "Docker" → copia el token y pégalo en TUNNEL_TOKEN en tu .env
+
+tunnel: <TU_TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TU_TUNNEL_ID>.json
+
+ingress:
+  # Dominio público → Caddy (reverse proxy)
+  # Reemplazá lumen.tu-dominio.com por tu dominio real
+  - hostname: lumen.tu-dominio.com
+    service: http://caddy:80
+    originRequest:
+      # Preserva headers del cliente original
+      preserveHostHeader: true
+      noTLSVerify: true
+
+  # Healthcheck interno (opcional, para que Cloudflare sepa que el tunnel responde)
+  - service: http_status:404

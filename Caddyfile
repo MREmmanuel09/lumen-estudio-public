@@ -1,0 +1,71 @@
+# Caddyfile para LUMEN Estudio
+#
+# OPCIÓN ACTIVA: túnel (Tailscale Funnel / Cloudflare Tunnel).
+# Caddy expone :80 en la red interna y el túnel se encarga del TLS.
+# Los headers de seguridad "principales" viven en next.config.ts (se aplican
+# a TODAS las rutas, incluso assets estáticos). Acá reforzamos con headers
+# que tienen sentido a nivel de proxy y filtramos el body size para mitigar
+# uploads fuera-de-banda (el verdadero límite está en el handler de /api/files).
+#
+# OPCIÓN DOMINIO PROPIO: ver el bloque comentado al final. Activarlo SOLO
+# con dominio real — dejar el placeholder {TU_DOMINIO} rompe el arranque.
+
+:80 {
+    # Tope duro de body: 25 MB (lo que el /api/files POST puede recibir).
+    # Directiva correcta en Caddy stock: `request_body { max_size ... }`.
+    # (`max_request_body` NO existe y rompía el arranque del contenedor.)
+    request_body {
+        max_size 25MB
+    }
+
+    reverse_proxy app:3000 {
+        # Cabeceras que Next usa para detectar el host "público" correcto
+        # (assertSameOrigin, redirect URLs, etc.). Sin `Host`, en prod vería
+        # el host interno (app:3000) y el check de CSRF / cookies fallaría.
+        # (X-Forwarded-For/Proto/Host los pasa Caddy por defecto: no repetirlos.)
+        header_up Host {host}
+        header_up X-Real-IP {remote}
+    }
+
+    # Headers de seguridad adicionales (complementan next.config.ts).
+    # HSTS llega al navegador a través del túnel (que sirve HTTPS).
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        # Remover header de Caddy que filtra versión
+        Server ""
+        # Defensa contra MIME confusion
+        X-Content-Type-Options "nosniff"
+    }
+
+    # NOTA: sin rate-limit a nivel proxy — `rate_limit` no es directiva del
+    # Caddy stock (requiere plugin externo) y rompía el arranque del contenedor.
+    # El rate-limit fino vive en la app (/api/auth/login, etc.).
+
+    log {
+        output stdout
+        format console
+    }
+}
+
+# --- OPCIÓN DOMINIO PROPIO (desactivada) ---
+# Para usarla: reemplazá {TU_DOMINIO} por tu dominio real, descomentá TODO
+# este bloque y comentá el bloque :80 de arriba.
+# {TU_DOMINIO} {
+#     request_body {
+#         max_size 25MB
+#     }
+#     reverse_proxy app:3000 {
+#         header_up Host {host}
+#         header_up X-Real-IP {remote}
+#     }
+#     header {
+#         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+#         Server ""
+#         X-Content-Type-Options "nosniff"
+#     }
+#     NOTA: sin rate_limit aquí (no existe en Caddy stock; ver bloque :80).
+#     log {
+#         output stdout
+#         format console
+#     }
+# }

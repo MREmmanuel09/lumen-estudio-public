@@ -1,0 +1,153 @@
+// Prisma schema — LUMEN Estudio
+// Generado para PostgreSQL 16. Migrar con: npx prisma migrate dev
+//
+// Diferencias vs spec original (justificadas en CONTRATOS_TECNICOS.md §4):
+// - Sin modelos `Session` ni `Account`: iron-session es stateless y no usamos OAuth.
+// - `File.status` añadido (PENDING/READY/FAILED) para orden transaccional al subir.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// PostgreSQL 16 en dev y producción (misma BD, cero divergencias).
+// Dev local: postgres del compose (`docker compose up -d postgres`) +
+//   DATABASE_URL="postgresql://lumen:change_me@localhost:5432/lumen_estudio"
+// Homelab/producción: URL apuntando al servicio `db` del compose prod.
+// (Histórico: SQLite `file:./dev.db`, eliminado para paridad total dev/prod.)
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums como strings (compatibles con SQLite).
+// Cuando se cambia a PostgreSQL, pueden convertirse a enums nativos en
+// este archivo y Prisma infiere el cambio sin tocar el código de la app.
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  passwordHash  String?
+  role          String    @default("USER")
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  messages      Message[]
+
+  @@index([email])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+  createdAt  DateTime @default(now())
+
+  @@unique([identifier, token])
+  @@index([identifier])
+}
+
+model GalleryCategory {
+  id          String          @id @default(cuid())
+  name        String          @unique
+  slug        String          @unique
+  description String          @default("")
+  coverImage  String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  mosaics     GalleryMosaic[]
+
+  @@index([slug])
+}
+
+model GalleryMosaic {
+  id          String          @id @default(cuid())
+  title       String
+  description String?
+  categoryId  String
+  category    GalleryCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  files       File[]
+  coverFileId String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([categoryId])
+}
+
+model File {
+  id        String       @id @default(cuid())
+  url       String
+  key       String       @unique
+  type      String
+  status    String       @default("PENDING")
+  altText   String?
+  mosaicId  String
+  mosaic    GalleryMosaic @relation(fields: [mosaicId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+  order     Int          @default(0)
+
+  // EXIF fotográfico (solo imágenes; null si no hay datos).
+  // Nunca se guarda GPS (ver src/lib/exif.ts).
+  width        Int?
+  height       Int?
+  cameraMake   String?
+  cameraModel  String?
+  lensModel    String?
+  focalLength  Float?
+  aperture     Float?
+  shutterSpeed Float?
+  iso          Int?
+  takenAt      DateTime?
+
+  @@index([mosaicId])
+  @@index([status])
+}
+
+model Service {
+  id            String   @id @default(cuid())
+  title         String
+  slug          String   @unique
+  description   String   @default("")
+  priceLabel    String?
+  priceNote     String?
+  durationLabel String?
+  // Lista JSON: ["Álbum de autor", "Entrega digital"]
+  features      String   @default("[]")
+  // Nombre de icono Lucide de la lista cerrada (ver schemas/service.ts)
+  icon          String?
+  image         String?
+  order         Int      @default(0)
+  visible       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([visible, order])
+  @@index([slug])
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  website   String?
+  order     Int      @default(0)
+  visible   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([visible, order])
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  subject   String?
+  message   String
+  createdAt DateTime @default(now())
+  read      Boolean  @default(false)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([read, createdAt])
+}

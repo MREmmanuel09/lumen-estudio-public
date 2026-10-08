@@ -1,0 +1,194 @@
+# LUMEN Estudio — Stack completo para homelab
+# Levanta: app + postgres + caddy (reverse proxy) + postfix (MTA propio) + mailpit (testing SMTP)
+#
+# Uso:
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+#   docker compose -f docker-compose.prod.yml logs -f app
+#
+# Email 100% self-hosted (cero terceros): la app envía a `postfix:25` y
+# Postfix entrega directo a los MX destino. Requiere: dominio + PTR +
+# puerto 25 abierto + SPF/DKIM/DMARC (ver docs/HOMELAB.md § Email).
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lumen-estudio:latest
+    container_name: lumen-app
+    restart: unless-stopped
+    user: "1001:1001"
+    read_only: true
+    # Filesystem temporal para Next (cache, .next/cache) — el resto es RO
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    env_file:
+      - .env
+    environment:
+      # P0: fail-closed — sin DB_PASSWORD / APP_URL reales el compose no levanta con credenciales conocidas.
+      - DATABASE_URL=postgresql://lumen:${DB_PASSWORD:?DB_PASSWORD requerido en .env}@db:5432/lumen_estudio?schema=public
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL requerido en .env}
+      # Fetch interno server-side: directo a localhost (el propio contenedor).
+      # Nunca la URL pública: el hairpin por el Funnel muere con timeout.
+      - INTERNAL_APP_URL=http://localhost:3000
+      # Fase 1: Resend API (SMTP_HOST vacío fuerza path Resend en src/lib/email.ts).
+      # Fase 2 Postfix: poner SMTP_HOST=postfix + SMTP_PORT=25 en .env.
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    networks:
+      - lumen_net
+    volumes:
+      - lumen_uploads:/app/public/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/auth/session"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Defensiva: la app no necesita red saliente arbitraria. Solo DNS,
+    # HTTPS al SMTP (postfix está en lumen_net), y al storage local.
+    # Para emergencias (curl de debug), usar `docker exec` con la red por defecto.
+
+  db:
+    image: postgres:16-alpine
+    container_name: lumen-db
+    restart: unless-stopped
+    # Sin user: fijo — el entrypoint de Postgres necesita arrancar como root
+    # para chown/chmod de /var/lib/postgresql/data en el primer init y luego
+    # baja a postgres solo. Forzar 999:999 rompe el init (Operation not permitted).
+    environment:
+      POSTGRES_USER: lumen
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD requerido en .env (sin default por seguridad)}
+      POSTGRES_DB: lumen_estudio
+      # P0: limitar conexiones remotas — la BD está en la red interna.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    volumes:
+      - lumen_pg_data:/var/lib/postgresql/data
+    networks:
+      - lumen_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumen -d lumen_estudio"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Sin puertos publicados: la BD no debe ser accesible desde el host
+    # ni desde Internet. La app llega por la red Docker interna.
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: lumen-caddy
+    restart: unless-stopped
+    # Caddy 2 corre como root por defecto (necesario para puertos <1024 y
+    # leer /etc/caddy). Mantener root está bien; el filesystem es RO
+    # excepto /config y /data (volúmenes).
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Solo :80 — el TLS lo termina Tailscale Funnel. Publicar 443 choca
+      # con otros servicios del host (address already in use) y no se usa.
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - lumen_net
+
+  # MTA propio — Postfix con entrega directa (Fase 2, con dominio).
+  # En Fase 1 (Resend) este servicio NO arranca (profile legacy).
+  # Para usarlo: docker compose -f docker-compose.prod.yml --profile legacy up -d
+  # Requiere MAIL_DOMAIN + MAIL_HOSTNAME reales en .env (ver docs/HOMELAB.md).
+  #
+  # ⚠️ Postfix necesita root internamente (setuid/setgid y bind puerto 25).
+  # La imagen boky/postfix ya está configurada para correr como root de
+  # forma controlada. No añadir cap_drop aquí.
+  postfix:
+    profiles: ["legacy"]
+    image: boky/postfix:latest
+    container_name: lumen-postfix
+    restart: unless-stopped
+    hostname: ${MAIL_HOSTNAME:-mail.example.com}
+    ports:
+      - "25:25"
+    environment:
+      - ALLOWED_SENDER_DOMAINS=${MAIL_DOMAIN:-example.com}
+      - POSTFIX_myhostname=${MAIL_HOSTNAME:-mail.example.com}
+      # Restringido: solo loopback + la red Docker privada del compose.
+      # Si tenés otra red Docker (p.ej. para monitoring), agregala acá.
+      - POSTFIX_mynetworks=127.0.0.0/8 172.16.0.0/12
+      - POSTFIX_message_size_limit=10485760
+      - TZ=${TZ:-America/Costa_Rica}
+    volumes:
+      - lumen_postfix_queue:/var/spool/postfix
+    networks:
+      - lumen_net
+    healthcheck:
+      test: ["CMD-SHELL", "postfix status >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # SMTP catcher para testing — NO enviar emails reales, los captura.
+  # UI: http://localhost:8025 — SMTP: localhost:1025
+  # En dev la app usa mailpit; en prod usa postfix (SMTP_HOST en .env).
+  # En producción, NO publiques estos puertos al host (comentar `ports`).
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: lumen-mailpit
+    restart: unless-stopped
+    # Solo localhost del homelab (vía SSH). NUNCA exponer la UI de mailpit
+    # a la LAN: muestra el contenido de todos los emails capturados.
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+    networks:
+      - lumen_net
+
+  # === OPCIONAL: Cloudflare Tunnel para exposición pública ===
+  # Para activarlo:
+  #   1. Crear tunnel en https://one.dash.cloudflare.com
+  #   2. Copiar el TUNNEL_TOKEN
+  #   3. Agregar a .env: CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoixxx...
+  #   4. Descomentar este bloque
+  #   5. Editar cloudflared/config.yml con tu dominio
+  #
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: lumen-cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+  #   networks:
+  #     - lumen_net
+  #   depends_on:
+  #     - caddy
+
+volumes:
+  lumen_pg_data:
+  lumen_uploads:
+  lumen_postfix_queue:
+  caddy_data:
+  caddy_config:
+
+networks:
+  lumen_net:
+    driver: bridge
+    # Restringir a subredes privadas; nada de gateways a otras redes.
+    ipam:
+      config:
+        - subnet: 172.16.0.0/24

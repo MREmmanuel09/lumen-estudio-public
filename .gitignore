@@ -1,0 +1,81 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# testing
+coverage/
+*.lcov
+
+# next.js
+.next/
+out/
+build/
+dist/
+# backups de .next durante debug
+_next_*.bak/
+_next_old.bak/
+
+# production
+*.tsbuildinfo
+next-env.d.ts.bak
+
+# misc
+.DS_Store
+*.pem
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local env files
+.env
+.env*.local
+
+# Archivo local con valores reales de configuración (nunca se commitea).
+.private-values.json
+
+# staging local de migración (dumps, tars, db SQLite legacy) — nunca subir
+migracion/
+
+# vercel
+.vercel
+
+# uploads (storage local en dev)
+public/uploads/
+
+# Foto personal del autor (cada quien sube la suya al deployar).
+# Si querés trackear una versión propia, quitá esta línea.
+public/images/author.jpg
+
+# Documentos personales (CV, etc.) — nunca al repo
+CV*.pdf
+cv*.pdf
+
+# prisma
+prisma/migrations/dev/
+
+# sqlite dev (nunca subir la BD local)
+*.db
+*.db-journal
+prisma/dev.db*
+
+# backups (Fase 0: no commitear .bak ni builds viejos)
+*.bak
+_page_old.tsx.bak
+_next_*.bak/
+_next_old.bak/
+Retrato.jpeg
+_check_admin.cjs
+dev.log
+dev.err.log
+dev-*.log
+
+# typescript
+*.tsbuildinfo
